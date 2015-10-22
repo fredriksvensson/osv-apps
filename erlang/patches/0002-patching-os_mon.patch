@@ -1,164 +1,22 @@
-diff -up lib/os_mon/c_src/disksup.c.orig lib/os_mon/c_src/disksup.c
---- lib/os_mon/c_src/disksup.c.orig	2015-09-05 20:15:44.594120104 +0800
-+++ lib/os_mon/c_src/disksup.c	2015-09-05 20:15:44.668116457 +0800
-@@ -0,0 +1,154 @@
-+#include <string.h>
-+#include <sys/param.h>
-+#include <sys/statvfs.h>
-+#include <mntent.h>
-+#include <erl_driver.h>
-+
-+
-+struct driver_data {
-+  ErlDrvPort port;
-+  ErlDrvTermData port_term;
-+};
-+
-+
-+struct disk_data {
-+  char *disk_path;
-+  size_t disk_path_len;
-+  size_t disk_size;
-+  int disk_usage;
-+  struct disk_data *next;
-+};
-+
-+
-+struct async_data {
-+  struct disk_data *disk_data;
-+  size_t entries;
-+};
-+
-+
-+static ErlDrvData disksup_start(ErlDrvPort port, char *buff __attribute__((unused)) ) {
-+  struct driver_data *driver_data = (struct driver_data *)driver_alloc(sizeof(struct driver_data));
-+  driver_data->port = port;
-+  driver_data->port_term = driver_mk_port(port);
-+  return (ErlDrvData)driver_data;
-+}
-+
-+
-+static void disksup_stop(ErlDrvData handle) {
-+  driver_free((struct driver_data *)handle);
-+}
-+
-+
-+static void disksup_async(void *data) {
-+  struct async_data *async_data = (struct async_data *)data;
-+  FILE *file = setmntent("/proc/mounts", "r");
-+  struct mntent mntent = {0};
-+  char buf[MAXPATHLEN * 4] = {0};
-+
-+  async_data->disk_data = NULL;
-+  async_data->entries = 0;
-+
-+  while (getmntent_r(file, &mntent, buf, sizeof(buf))) {
-+    struct disk_data *disk_data;
-+    fsblkcnt_t used;
-+    fsblkcnt_t total;
-+    struct statvfs stat = {0};
-+
-+    if (statvfs(mntent.mnt_dir, &stat))
-+      continue;
-+    if (!stat.f_files)
-+      continue;
-+
-+    disk_data = (struct disk_data *)driver_alloc(sizeof(struct disk_data));
-+    disk_data->disk_path_len = strlen(mntent.mnt_dir);
-+    disk_data->disk_path = (char *)driver_alloc(disk_data->disk_path_len);
-+    memcpy(disk_data->disk_path, mntent.mnt_dir, disk_data->disk_path_len);
-+    disk_data->disk_size = stat.f_blocks * stat.f_frsize / 1024;
-+    used = (stat.f_blocks - stat.f_bfree) * 100;
-+    total = stat.f_blocks - stat.f_bfree + stat.f_bavail;
-+    disk_data->disk_usage = (used / total) + (used % total > 0);
-+
-+    disk_data->next = async_data->disk_data;
-+    async_data->disk_data = disk_data;
-+    async_data->entries++;
-+  }
-+}
-+
-+
-+static void disksup_output(ErlDrvData handle, char *buff __attribute__((unused)), ErlDrvSizeT bufflen __attribute__((unused))) {
-+  struct driver_data *driver_data = (struct driver_data *)handle;
-+  struct async_data *async_data = (struct async_data *)driver_alloc(sizeof(struct async_data));
-+  driver_async(driver_data->port, NULL, disksup_async, async_data, NULL);
-+}
-+
-+
-+static void disksup_ready_async(ErlDrvData handle, ErlDrvThreadData thread_data) {
-+  struct driver_data *driver_data = (struct driver_data *)handle;
-+  struct async_data *async_data = (struct async_data *)thread_data;
-+  struct disk_data *disk_data = async_data->disk_data;
-+
-+  ErlDrvTermData term[(async_data->entries) * 9 + 7];
-+  int i = 0;
-+  term[i++] = ERL_DRV_PORT;
-+  term[i++] = driver_data->port_term;
-+
-+  while(disk_data) {
-+    term[i++] = ERL_DRV_STRING;
-+    term[i++] = (ErlDrvTermData)disk_data->disk_path;
-+    term[i++] = disk_data->disk_path_len;
-+    term[i++] = ERL_DRV_UINT;
-+    term[i++] = disk_data->disk_size;
-+    term[i++] = ERL_DRV_INT;
-+    term[i++] = disk_data->disk_usage;
-+    term[i++] = ERL_DRV_TUPLE;
-+    term[i++] = 3;
-+    disk_data = disk_data->next;
-+  }
-+  term[i++] = ERL_DRV_NIL;
-+  term[i++] = ERL_DRV_LIST;
-+  term[i++] = async_data->entries + 1;
-+  term[i++] = ERL_DRV_TUPLE;
-+  term[i++] = 2;
-+  erl_drv_output_term(driver_data->port_term, term, sizeof(term)/sizeof(ErlDrvTermData));
-+
-+  disk_data = async_data->disk_data;
-+  while(disk_data) {
-+    struct disk_data *next_disk_data = disk_data->next;
-+    driver_free(disk_data->disk_path);
-+    driver_free(disk_data);
-+    disk_data = next_disk_data;
-+  }
-+  driver_free(async_data);
-+}
-+
-+
-+ErlDrvEntry disksup_entry = {
-+  .init            = NULL,
-+  .start           = disksup_start,
-+  .stop            = disksup_stop,
-+  .output          = disksup_output,
-+  .ready_input     = NULL,
-+  .ready_output    = NULL,
-+  .driver_name     = "disksup",
-+  .finish          = NULL,
-+  .handle          = NULL,
-+  .control         = NULL,
-+  .timeout         = NULL,
-+  .outputv         = NULL,
-+  .ready_async     = disksup_ready_async,
-+  .flush           = NULL,
-+  .call            = NULL,
-+  .event           = NULL,
-+  .extended_marker = ERL_DRV_EXTENDED_MARKER,
-+  .major_version   = ERL_DRV_EXTENDED_MAJOR_VERSION,
-+  .minor_version   = ERL_DRV_EXTENDED_MINOR_VERSION,
-+  .driver_flags    = 0,
-+  .handle2         = NULL,
-+  .process_exit    = NULL,
-+  .stop_select     = NULL,
-+};
-+
-+
-+DRIVER_INIT(disksup) {
-+  return &disksup_entry;
-+}
-diff -up lib/os_mon/c_src/Makefile.in.orig lib/os_mon/c_src/Makefile.in
---- lib/os_mon/c_src/Makefile.in.orig	2015-06-24 02:56:21.000000000 +0800
-+++ lib/os_mon/c_src/Makefile.in	2015-09-05 20:15:44.710114388 +0800
+From 6e248fd953b5112e06707d612297cb6911b797d5 Mon Sep 17 00:00:00 2001
+From: Fredrik Svensson <fredrik.p.svensson@gmail.com>
+Date: Thu, 22 Oct 2015 15:15:17 +0000
+Subject: [PATCH 2/2] patching os_mon
+
+inherited from apps/erlang
+---
+ lib/os_mon/c_src/Makefile.in  |  27 +-
+ lib/os_mon/c_src/memsup.c     | 710 +++++++++---------------------------------
+ lib/os_mon/src/disksup.erl    | 150 +--------
+ lib/os_mon/src/memsup.erl     |  27 +-
+ lib/os_mon/src/os_mon.app.src |   2 +-
+ lib/os_mon/src/os_mon.erl     |  22 +-
+ 6 files changed, 207 insertions(+), 731 deletions(-)
+
+diff --git a/lib/os_mon/c_src/Makefile.in b/lib/os_mon/c_src/Makefile.in
+index e9fc5f4..1be59e5 100644
+--- a/lib/os_mon/c_src/Makefile.in
++++ b/lib/os_mon/c_src/Makefile.in
 @@ -19,6 +19,7 @@
  #
  include $(ERL_TOP)/make/target.mk
@@ -236,9 +94,10 @@ diff -up lib/os_mon/c_src/Makefile.in.orig lib/os_mon/c_src/Makefile.in
 +	$(INSTALL_PROGRAM) $(SOLIBS:%=$(LIBDIR)/%.so) "$(RELSYSDIR)/priv/lib"
  
  release_docs_spec:
-diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
---- lib/os_mon/c_src/memsup.c.orig	2015-09-05 20:15:44.712114290 +0800
-+++ lib/os_mon/c_src/memsup.c	2015-09-05 20:21:55.288862544 +0800
+diff --git a/lib/os_mon/c_src/memsup.c b/lib/os_mon/c_src/memsup.c
+index 08a4cc4..4a25d58 100644
+--- a/lib/os_mon/c_src/memsup.c
++++ b/lib/os_mon/c_src/memsup.c
 @@ -1,592 +1,176 @@
 -/*
 - * %CopyrightBegin%
@@ -444,23 +303,36 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -    unsigned long total_swap;
 -    unsigned long free_swap;
 -} memory_ext;
--
+ 
 -typedef struct mem_table_struct {
 -  const char *name;     /* memory type name */
 -  unsigned long *slot; /* slot in return struct */
 -} mem_table_struct;
--
--
++struct driver_data {
++  ErlDrvPort port;
++  ErlDrvTermData port_term;
++};
+ 
+ 
 -/*  static variables */
--
++struct async_data {
++  int type;
++  unsigned long mem_total;
++  unsigned long mem_free;
++  unsigned long mem_buffers;
++  unsigned long mem_shared;
++  unsigned long swap_total;
++  unsigned long swap_free;
++};
+ 
 -static char *program_name;
--
+ 
 -static void
 -send(unsigned long value, unsigned long pagesize) {
 -    char buf[32];
 -    int left, bytes, res;
 -    int hex_zeroes;
- 
+-
 -    for (hex_zeroes = 0; (pagesize % 16) == 0; pagesize /= 16) {
 -	hex_zeroes++;
 -    }
@@ -473,11 +345,7 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -    }
 -    buf[0] = (char) bytes;
 -    left = ++bytes;
-+struct driver_data {
-+  ErlDrvPort port;
-+  ErlDrvTermData port_term;
-+};
- 
+-
 -    while (left > 0) {
 -	res = write(ERLOUT_FD, buf+bytes-left, left);
 -	if (res <= 0){
@@ -486,13 +354,18 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -	}
 -	left -= res;
 -    }
--}
++static ErlDrvData memsup_start(ErlDrvPort port, char *buff __attribute__((unused))) {
++  struct driver_data *driver_data = (struct driver_data *)driver_alloc(sizeof(struct driver_data));
++  driver_data->port = port;
++  driver_data->port_term = driver_mk_port(port);
++  return (ErlDrvData)driver_data;
+ }
  
 -static void
 -send_tag(int value){
 -    unsigned char buf[2];
 -    int res,left;
--
+ 
 -    buf[0] = 1U;
 -    buf[1] = (unsigned char) value;
 -    left = 2;
@@ -504,16 +377,9 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -	    left -= res;
 -	}
 -    }
--}
-+struct async_data {
-+  int type;
-+  unsigned long mem_total;
-+  unsigned long mem_free;
-+  unsigned long mem_buffers;
-+  unsigned long mem_shared;
-+  unsigned long swap_total;
-+  unsigned long swap_free;
-+};
++static void memsup_stop(ErlDrvData handle) {
++  driver_free((struct driver_data *)handle);
+ }
  
 -#ifdef BSD4_4
 -static int
@@ -522,17 +388,22 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -	size_t size = sizeof *vt;
  
 -	return sysctl(vmtotal_mib, 2, vt, &size, NULL, 0) != -1;
-+static ErlDrvData memsup_start(ErlDrvPort port, char *buff __attribute__((unused))) {
-+  struct driver_data *driver_data = (struct driver_data *)driver_alloc(sizeof(struct driver_data));
-+  driver_data->port = port;
-+  driver_data->port_term = driver_mk_port(port);
-+  return (ErlDrvData)driver_data;
++static void memsup_async(void *data) {
++  struct async_data *async_data = (struct async_data *)data;
++  struct sysinfo info = {0};
++  sysinfo(&info);
++  async_data->mem_total   = info.totalram;
++  async_data->mem_free    = info.freeram;
++  async_data->mem_buffers = info.bufferram;
++  async_data->mem_shared  = info.sharedram;
++  async_data->swap_total  = info.totalswap;
++  async_data->swap_free   = info.freeswap;
  }
 -#endif
 -
 -#if defined(__linux__)
 -
--
+ 
 -static int 
 -get_mem_procfs(memory_ext *me){
 -    int fd, nread;
@@ -549,7 +420,10 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -	return -1;
 -    }
 -    close(fd);
--
++static void memsup_output(ErlDrvData handle, char *buff, ErlDrvSizeT bufflen) {
++  struct driver_data *driver_data = (struct driver_data *)handle;
++  struct async_data *async_data;
+ 
 -    buffer[nread] = '\0';
 -    
 -    /* Total and free is NEEDED! */
@@ -568,7 +442,7 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -    bp = strstr(buffer, "Cached:");    
 -    if (bp != NULL && sscanf(bp, "Cached: %lu kB\n", &(me->cached)))   me->flag |= F_MEM_CACHED;
 -    
- 
+-
 -    /* Swap */
 -    
 -    bp = strstr(buffer, "SwapTotal:");    
@@ -580,14 +454,12 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -    me->pagesize = 1024; /* procfs defines its size in kB */
 -    
 -    return 1;   
-+static void memsup_stop(ErlDrvData handle) {
-+  driver_free((struct driver_data *)handle);
- }
+-}
 -#endif
 -
- 
+-
 -/* arch specific functions */
- 
+-
 -#if defined(__linux__) && !defined(__ANDROID__)/* ifdef SYSINFO */
 -/* sysinfo does not include cached memory which is a problem. */
 -static int
@@ -620,19 +492,9 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -    me->flag = F_MEM_TOTAL | F_MEM_FREE;
 -
 -    return 1;
-+static void memsup_async(void *data) {
-+  struct async_data *async_data = (struct async_data *)data;
-+  struct sysinfo info = {0};
-+  sysinfo(&info);
-+  async_data->mem_total   = info.totalram;
-+  async_data->mem_free    = info.freeram;
-+  async_data->mem_buffers = info.bufferram;
-+  async_data->mem_shared  = info.sharedram;
-+  async_data->swap_total  = info.totalswap;
-+  async_data->swap_free   = info.freeswap;
- }
+-}
 -#endif
- 
+-
 -#if defined(BSD4_4)
 -static int
 -get_extended_mem_bsd4(memory_ext *me) {
@@ -651,7 +513,7 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -    return 1;
 -}
 -#endif
- 
+-
 -#if defined(sgi) || defined(__sgi) || defined(__sgi__)
 -static int
 -get_extended_mem_sgi(memory_ext *me) {
@@ -666,10 +528,7 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -    return 1;
 -}
 -#endif
-+static void memsup_output(ErlDrvData handle, char *buff, ErlDrvSizeT bufflen) {
-+  struct driver_data *driver_data = (struct driver_data *)handle;
-+  struct async_data *async_data;
- 
+-
 -static void
 -get_extended_mem(memory_ext *me) {
 -/* android */
@@ -754,14 +613,17 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -    *pagesize = 1;
 -#endif
 -}    
--
+ 
 -static void
 -simple_show_mem(void){
 -    unsigned long tot, used, pagesize;
 -    get_basic_mem(&tot, &used, &pagesize);
 -    send(used, pagesize);
 -    send(tot, pagesize);
--}
++  async_data = (struct async_data *)driver_alloc(sizeof(struct async_data));
++  async_data->type = buff[0];
++  driver_async(driver_data->port, NULL, memsup_async, async_data, NULL);
+ }
  
 -static void 
 -extended_show_mem(void){
@@ -787,7 +649,7 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -    if (me.flag & F_MEM_TOTAL)  { send_tag(MEM_SYSTEM_TOTAL); send(me.total, ps);     }
 -    send_tag(SHOW_SYSTEM_MEM_END);
 -}    
--
+ 
 -static void
 -message_loop(int erlin_fd)
 -{
@@ -835,25 +697,6 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 -	    print_error("Erlang has closed");
 -	    return;
 -	}
--    }
--}
--
--/*
-- *  main
-- */
--int
--MAIN(int argc, char **argv)
--{
--  program_name = argv[0];
--  message_loop(ERLIN_FD);
--  return 0;
--}
-+  async_data = (struct async_data *)driver_alloc(sizeof(struct async_data));
-+  async_data->type = buff[0];
-+  driver_async(driver_data->port, NULL, memsup_async, async_data, NULL);
-+}
-+
-+
 +static void memsup_ready_async(ErlDrvData handle, ErlDrvThreadData thread_data) {
 +  struct driver_data *driver_data = (struct driver_data *)handle;
 +  struct async_data *async_data = (struct async_data *)thread_data;
@@ -928,17 +771,43 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 +
 +    for(i=0;i<14;i++) {
 +      erl_drv_output_term(driver_data->port_term, term[i], 6);
-+    }
-+
+     }
+-}
+ 
+-/*
+- *  main
+- */
+-int
+-MAIN(int argc, char **argv)
+-{
+-  program_name = argv[0];
+-  message_loop(ERLIN_FD);
+-  return 0;
 +    erl_drv_output_term(driver_data->port_term, end_term, 6);
 +    break;
 +  }
 +  default:
 +    break;
 +  }
-+}
-+
-+
+ }
+ 
+ 
+-/*
+- *  print_error
+- *
+- */
+-static void
+-print_error(const char *format,...)
+-{
+-  va_list args;
+-  char buffer[256];
+-
+-  va_start(args, format);
+-  vsnprintf(buffer, 256, format, args);
+-  va_end(args);
+-  /* try to use one write only */
+-  fprintf(stderr, "[os_mon] memory supervisor port (memsup): %s\r\n", buffer);
+-  fflush(stderr);
 +ErlDrvEntry memsup_entry = {
 +  .init            = NULL,
 +  .start           = memsup_start,
@@ -964,31 +833,16 @@ diff -up lib/os_mon/c_src/memsup.c.orig lib/os_mon/c_src/memsup.c
 +  .process_exit    = NULL,
 +  .stop_select     = NULL,
 +};
- 
- 
--/*
-- *  print_error
-- *
-- */
--static void
--print_error(const char *format,...)
--{
--  va_list args;
--  char buffer[256];
--
--  va_start(args, format);
--  vsnprintf(buffer, 256, format, args);
--  va_end(args);
--  /* try to use one write only */
--  fprintf(stderr, "[os_mon] memory supervisor port (memsup): %s\r\n", buffer);
--  fflush(stderr);
++
++
 +DRIVER_INIT(memsup) {
 +  return &memsup_entry;
  }
-diff -up lib/os_mon/src/disksup.erl.orig lib/os_mon/src/disksup.erl
---- lib/os_mon/src/disksup.erl.orig	2015-06-24 02:56:21.000000000 +0800
-+++ lib/os_mon/src/disksup.erl	2015-09-05 20:15:44.991100550 +0800
-@@ -93,7 +93,7 @@ param_default(disksup_posix_only) -> fal
+diff --git a/lib/os_mon/src/disksup.erl b/lib/os_mon/src/disksup.erl
+index 23c7ebb..8b03d22 100644
+--- a/lib/os_mon/src/disksup.erl
++++ b/lib/os_mon/src/disksup.erl
+@@ -93,7 +93,7 @@ param_default(disksup_posix_only) -> false.
  %% gen_server callbacks
  %%----------------------------------------------------------------------
  
@@ -1162,9 +1016,10 @@ diff -up lib/os_mon/src/disksup.erl.orig lib/os_mon/src/disksup.erl
 -    T;
 -skip_to_eol([_ | T]) ->
 -    skip_to_eol(T).
-diff -up lib/os_mon/src/memsup.erl.orig lib/os_mon/src/memsup.erl
---- lib/os_mon/src/memsup.erl.orig	2015-06-24 02:56:21.000000000 +0800
-+++ lib/os_mon/src/memsup.erl	2015-09-05 20:15:44.993100451 +0800
+diff --git a/lib/os_mon/src/memsup.erl b/lib/os_mon/src/memsup.erl
+index e4b7c8c..0b21443 100644
+--- a/lib/os_mon/src/memsup.erl
++++ b/lib/os_mon/src/memsup.erl
 @@ -800,7 +800,7 @@ port_init() ->
      port_idle(Port).
  
@@ -1200,7 +1055,7 @@ diff -up lib/os_mon/src/memsup.erl.orig lib/os_mon/src/memsup.erl
  	    port_idle(Port);
  	close ->
  	    port_close(Port);
-@@ -879,10 +878,10 @@ get_ext_memory_usage(Port, Accum, Memsup
+@@ -879,10 +878,10 @@ get_ext_memory_usage(Port, Accum, Memsup) ->
  	    {?SWAP_FREE,	  free_swap}
  	],
      receive
@@ -1236,7 +1091,7 @@ diff -up lib/os_mon/src/memsup.erl.orig lib/os_mon/src/memsup.erl
  	    get_ext_memory_usage(Port, Accum, Memsup);
  	cancel ->
  	    get_ext_memory_usage_cancelled(ATag, Port);
-@@ -945,7 +944,7 @@ get_ext_memory_usage(ATag, Port, Accum0,
+@@ -945,7 +944,7 @@ get_ext_memory_usage(ATag, Port, Accum0, Memsup) ->
      end.
  get_ext_memory_usage_cancelled(_ATag, Port) ->
      receive
@@ -1245,9 +1100,10 @@ diff -up lib/os_mon/src/memsup.erl.orig lib/os_mon/src/memsup.erl
  	    get_ext_memory_usage_cancelled(Port);
  	close ->
  	    port_close(Port);
-diff -up lib/os_mon/src/os_mon.app.src.orig lib/os_mon/src/os_mon.app.src
---- lib/os_mon/src/os_mon.app.src.orig	2015-06-24 02:56:21.000000000 +0800
-+++ lib/os_mon/src/os_mon.app.src	2015-09-05 20:15:44.993100451 +0800
+diff --git a/lib/os_mon/src/os_mon.app.src b/lib/os_mon/src/os_mon.app.src
+index 6ef7bed..b4ae63a 100644
+--- a/lib/os_mon/src/os_mon.app.src
++++ b/lib/os_mon/src/os_mon.app.src
 @@ -26,7 +26,7 @@
      {registered, [os_mon_sup, os_mon_sysinfo, disksup, memsup, cpu_sup, 
                    os_sup_server]},
@@ -1257,9 +1113,10 @@ diff -up lib/os_mon/src/os_mon.app.src.orig lib/os_mon/src/os_mon.app.src
  	   {start_disksup, true},
  	   {start_memsup, true},
  	   {start_os_sup, false}]},
-diff -up lib/os_mon/src/os_mon.erl.orig lib/os_mon/src/os_mon.erl
---- lib/os_mon/src/os_mon.erl.orig	2015-06-24 02:56:21.000000000 +0800
-+++ lib/os_mon/src/os_mon.erl	2015-09-05 20:15:44.994100402 +0800
+diff --git a/lib/os_mon/src/os_mon.erl b/lib/os_mon/src/os_mon.erl
+index 0fef0ec..0451659 100644
+--- a/lib/os_mon/src/os_mon.erl
++++ b/lib/os_mon/src/os_mon.erl
 @@ -82,18 +82,16 @@ get_env(Service, Param) ->
  
  open_port(Name, Opts) ->
@@ -1289,3 +1146,6 @@ diff -up lib/os_mon/src/os_mon.erl.orig lib/os_mon/src/os_mon.erl
  
  
  %%%-----------------------------------------------------------------
+-- 
+1.9.1
+

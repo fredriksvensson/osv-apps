@@ -1,35 +1,34 @@
 .PHONY: all
 
-OTP_VERSION=18.0
-ERTS_VERSION=7.0
+OTP_VERSION=OTP-18.1.1
+ERTS_VERSION=7.1
+OTP_DIRECTORY=otp_$(OTP_VERSION)
+OTP_REPO=https://github.com/erlang/otp.git
 
 all: install erlang.so
 module: install erlang.so
 
-otp_src_$(OTP_VERSION).tar.gz:
-	wget -O "$@.temp" "http://www.erlang.org/download/otp_src_$(OTP_VERSION).tar.gz"
-	mv "$@.temp" "$@"
+$(OTP_DIRECTORY):
+	git clone --depth 1 -b $(OTP_VERSION) $(OTP_REPO) $@
+	touch $(OTP_DIRECTORY)/lib/os_mon/c_src/disksup.c
+	cd $(OTP_DIRECTORY); git am ../patches/*.patch
+	cd $(OTP_DIRECTORY); ./otp_build autoconf
 
-otp_src_$(OTP_VERSION): otp_src_$(OTP_VERSION).tar.gz
-	tar xvf "$<"
-	touch otp_src_$(OTP_VERSION)/lib/os_mon/c_src/disksup.c
-	cd otp_src_$(OTP_VERSION); patch -b -p0 < ../os_mon.patch
-	cd otp_src_$(OTP_VERSION); patch -b -p0 < ../epmd.patch
+configure: $(OTP_DIRECTORY)
+	cd $(OTP_DIRECTORY); export ERL_TOP=$(CURDIR)/$(OTP_DIRECTORY) CFLAGS=-fpie LDFLAGS="-pie -rdynamic"; ./otp_build configure -prefix=/usr --libdir=/usr/lib64 --disable-hipe --without-hipe --without-odbc --enable-builtin-zlib --with-termcap=ncurses --without-wx --without-erl_interface --without-javac --without-jinterface --without-debugger --without-et --without-observer
 
-configure: otp_src_$(OTP_VERSION)
-	cd otp_src_$(OTP_VERSION); export ERL_TOP=$(CURDIR)/otp_src_$(OTP_VERSION) CFLAGS=-fpie LDFLAGS="-pie -rdynamic"; ./configure -prefix=/usr --libdir=/usr/lib64 --disable-hipe --without-hipe --without-odbc --enable-builtin-zlib --with-termcap=ncurses --without-wx --without-erl_interface --without-javac --without-jinterface
 
 compile: configure
 	mkdir -p ROOTFS
-	cd otp_src_$(OTP_VERSION); export ERL_TOP=$(CURDIR)/otp_src_$(OTP_VERSION); $(MAKE)
+	cd $(OTP_DIRECTORY); export ERL_TOP=$(CURDIR)/$(OTP_DIRECTORY); $(MAKE)
 
 install: compile
-	cd otp_src_$(OTP_VERSION); export ERL_TOP=$(CURDIR)/otp_src_$(OTP_VERSION) DESTDIR=$(CURDIR)/ROOTFS; make install
+	cd $(OTP_DIRECTORY); export ERL_TOP=$(CURDIR)/$(OTP_DIRECTORY) DESTDIR=$(CURDIR)/ROOTFS; make install
 
 erlang.so: erlang.c
-	$(CC) -shared -rdynamic -fPIC -o erlang.so -std=gnu99 -DERTS_VERSION=$(ERTS_VERSION) erlang.c
+	$(CC) -shared -rdynamic -fPIC -o $@ -std=gnu99 -DERTS_VERSION=$(ERTS_VERSION) erlang.c
 
 clean:
 	-rm -rf ROOTFS
-	-rm -rf otp_src_$(OTP_VERSION)
-	-rm -f otp_src_$(OTP_VERSION).tar.gz otp_src_$(OTP_VERSION).tar.gz.temp erlang.so
+	-rm -rf $(OTP_DIRECTORY)
+	-rm -f erlang.so

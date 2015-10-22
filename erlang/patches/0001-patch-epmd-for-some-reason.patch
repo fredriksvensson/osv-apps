@@ -1,6 +1,31 @@
-diff -up erts/etc/common/erlexec.c.orig erts/etc/common/erlexec.c
---- erts/etc/common/erlexec.c.orig	2015-06-24 02:56:21.000000000 +0800
-+++ erts/etc/common/erlexec.c	2015-09-05 20:25:57.297943048 +0800
+From a443d648bf0156efcfafc52ca534cd68aa188267 Mon Sep 17 00:00:00 2001
+From: Fredrik Svensson <fredrik.p.svensson@gmail.com>
+Date: Thu, 22 Oct 2015 15:14:04 +0000
+Subject: [PATCH 1/2] patch epmd for some reason
+
+unclear reason, but change is inherited from apps/erlang
+---
+ erts/etc/common/Makefile.in |  2 +-
+ erts/etc/common/erlexec.c   | 97 ++++++++++++++++++++++-----------------------
+ 2 files changed, 49 insertions(+), 50 deletions(-)
+
+diff --git a/erts/etc/common/Makefile.in b/erts/etc/common/Makefile.in
+index 05d925f..2401cf2 100644
+--- a/erts/etc/common/Makefile.in
++++ b/erts/etc/common/Makefile.in
+@@ -415,7 +415,7 @@ $(OBJDIR)/safe_string.o: $(ETC)/safe_string.c $(RC_GENERATED)
+ 
+ ifneq ($(TARGET),win32)
+ $(BINDIR)/$(ERLEXEC): $(OBJDIR)/$(ERLEXEC).o $(ERTS_LIB)
+-	$(ld_verbose)$(PURIFY) $(LD) $(LDFLAGS) -o $@ $(OBJDIR)/$(ERLEXEC).o $(ERTS_INTERNAL_LIBS)
++	$(ld_verbose)$(PURIFY) $(LD) $(LDFLAGS) -o $@ $(OBJDIR)/$(ERLEXEC).o $(ERTS_INTERNAL_LIBS) -ldl -pthread
+ 
+ $(OBJDIR)/$(ERLEXEC).o: $(ERLEXECDIR)/$(ERLEXEC).c $(RC_GENERATED)
+ 	$(V_CC) -I$(EMUDIR) $(CFLAGS) -o $@ -c $(ERLEXECDIR)/$(ERLEXEC).c
+diff --git a/erts/etc/common/erlexec.c b/erts/etc/common/erlexec.c
+index cde0b25..ab53840 100644
+--- a/erts/etc/common/erlexec.c
++++ b/erts/etc/common/erlexec.c
 @@ -31,6 +31,8 @@
  #include "erl_driver.h"
  #include <stdlib.h>
@@ -141,15 +166,6 @@ diff -up erts/etc/common/erlexec.c.orig erts/etc/common/erlexec.c
        fprintf(stderr, "Error spawning %s (error %d)\n", epmd_cmd,errno);
        exit(1);
      }
-diff -up erts/etc/common/Makefile.in.orig erts/etc/common/Makefile.in
---- erts/etc/common/Makefile.in.orig	2015-06-24 02:56:21.000000000 +0800
-+++ erts/etc/common/Makefile.in	2015-09-05 20:25:57.298942999 +0800
-@@ -448,7 +448,7 @@ $(OBJDIR)/safe_string.o: ../common/safe_
- 
- ifneq ($(TARGET),win32)
- $(BINDIR)/$(ERLEXEC): $(OBJDIR)/$(ERLEXEC).o $(ERTS_LIB)
--	$(ld_verbose)$(PURIFY) $(LD) $(LDFLAGS) -o $@ $(OBJDIR)/$(ERLEXEC).o $(ERTS_INTERNAL_LIBS)
-+	$(ld_verbose)$(PURIFY) $(LD) $(LDFLAGS) -o $@ $(OBJDIR)/$(ERLEXEC).o $(ERTS_INTERNAL_LIBS) -ldl -pthread
- 
- $(OBJDIR)/$(ERLEXEC).o: $(ERLEXECDIR)/$(ERLEXEC).c $(RC_GENERATED)
- 	$(V_CC) -I$(EMUDIR) $(CFLAGS) -o $@ -c $(ERLEXECDIR)/$(ERLEXEC).c
+-- 
+1.9.1
+
